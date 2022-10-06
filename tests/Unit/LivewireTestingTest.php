@@ -4,7 +4,9 @@ namespace Tests\Unit;
 
 use Livewire\Component;
 use Livewire\Livewire;
+use PHPUnit\Framework\AssertionFailedError;
 use Illuminate\Support\Facades\Route;
+use Tests\Unit\Components\ComponentWhichReceivesEvent;
 
 class LivewireTestingTest extends TestCase
 {
@@ -45,19 +47,41 @@ class LivewireTestingTest extends TestCase
     /** @test */
     public function assert_set()
     {
-        Livewire::test(HasMountArguments::class, ['name' => 'foo'])
+        $component = Livewire::test(HasMountArguments::class, ['name' => 'foo'])
             ->assertSet('name', 'foo')
             ->set('name', 'info')
             ->assertSet('name', 'info')
             ->set('name', 'is_array')
-            ->assertSet('name', 'is_array');
+            ->assertSet('name', 'is_array')
+            ->set('name', 0)
+            ->assertSet('name', null)
+            ->assertSet('name', 0, true)
+            ->assertSet(
+                'name',
+                function ($propertyValue) {
+                    return $propertyValue === 0;
+                }
+            );
+
+        $this->expectException(\PHPUnit\Framework\ExpectationFailedException::class);
+
+        $component->assertSet('name', null, true);
     }
 
     /** @test */
     public function assert_not_set()
     {
-        Livewire::test(HasMountArguments::class, ['name' => 'bar'])
-            ->assertNotSet('name', 'foo');
+        $component = Livewire::test(HasMountArguments::class, ['name' => 'bar'])
+            ->assertNotSet('name', 'foo')
+            ->set('name', 100)
+            ->assertNotSet('name', "1e2", true)
+            ->set('name', 0)
+            ->assertNotSet('name', false, true)
+            ->assertNotSet('name', null, true);
+
+        $this->expectException(\PHPUnit\Framework\ExpectationFailedException::class);
+
+        $component->assertNotSet('name', null);
     }
 
     /** @test */
@@ -148,10 +172,48 @@ class LivewireTestingTest extends TestCase
             ->assertEmitted('foo')
             ->call('emitFooWithParam', 'bar')
             ->assertEmitted('foo', 'bar')
+            ->call('emitFooWithParam', 'info')
+            ->assertEmitted('foo', 'info')
+            ->call('emitFooWithParam', 'last')
+            ->assertEmitted('foo', 'last')
+            ->call('emitFooWithParam', 'retry')
+            ->assertEmitted('foo', 'retry')
             ->call('emitFooWithParam', 'baz')
             ->assertEmitted('foo', function ($event, $params) {
                 return $event === 'foo' && $params === ['baz'];
             });
+    }
+
+    /** @test */
+    public function assert_emitted_to()
+    {
+        Livewire::test(EmitsEventsComponentStub::class)
+            ->call('emitFooToSomeComponent')
+            ->assertEmittedTo('some-component', 'foo')
+            ->call('emitFooToAComponentAsAModel')
+            ->assertEmittedTo(ComponentWhichReceivesEvent::class, 'foo')
+            ->call('emitFooToSomeComponentWithParam', 'bar')
+            ->assertEmittedTo('some-component', 'foo', 'bar')
+            ->call('emitFooToSomeComponentWithParam', 'bar')
+            ->assertEmittedTo('some-component','foo', function ($event, $params) {
+                return $event === 'foo' && $params === ['bar'];
+            })
+        ;
+    }
+
+    /** @test */
+    public function assert_emitted_up()
+    {
+        Livewire::test(EmitsEventsComponentStub::class)
+            ->call('emitFooUp')
+            ->assertEmittedUp('foo')
+            ->call('emitFooUpWithParam', 'bar')
+            ->assertEmittedUp('foo', 'bar')
+            ->call('emitFooUpWithParam', 'bar')
+            ->assertEmittedUp('foo', function ($event, $params) {
+                return $event === 'foo' && $params === ['bar'];
+            })
+        ;
     }
 
     /** @test */
@@ -176,7 +238,7 @@ class LivewireTestingTest extends TestCase
     }
 
     /** @test */
-    public function assert_dispatched()
+    public function assert_dispatched_browser_event()
     {
         Livewire::test(DispatchesBrowserEventsComponentStub::class)
             ->call('dispatchFoo')
@@ -187,6 +249,15 @@ class LivewireTestingTest extends TestCase
             ->assertDispatchedBrowserEvent('foo', function ($event, $data) {
                 return $event === 'foo' && $data === ['bar' => 'baz'];
             });
+    }
+
+    /** @test */
+    public function assert_dispatched_browser_event_fails()
+    {
+        $this->expectException(AssertionFailedError::class);
+
+        Livewire::test(DispatchesBrowserEventsComponentStub::class)
+            ->assertDispatchedBrowserEvent('foo');
     }
 
     /** @test */
@@ -228,6 +299,17 @@ class LivewireTestingTest extends TestCase
             ])
             ->set('bar', '')
             ->assertHasErrors(['foo', 'bar']);
+    }
+
+    /** @test */
+    public function it_ignores_rules_with_params(){
+        Livewire::test(ValidatesDataWithRulesHasParams::class)
+            ->call('submit')
+            ->assertHasErrors(['foo' => 'min'])
+            ->assertHasErrors(['foo' => 'min:2'])
+            ->set('foo', 'FOO')
+            ->assertHasNoErrors(['foo' => 'min'])
+            ->assertHasNoErrors(['foo' => 'min:2']);
     }
 }
 
@@ -279,6 +361,31 @@ class EmitsEventsComponentStub extends Component
     public function emitFooWithParam($param)
     {
         $this->emit('foo', $param);
+    }
+
+    public function emitFooToSomeComponent()
+    {
+        $this->emitTo('some-component','foo');
+    }
+
+    public function emitFooToSomeComponentWithParam($param)
+    {
+        $this->emitTo('some-component','foo', $param);
+    }
+
+    public function emitFooToAComponentAsAModel()
+    {
+        $this->emitTo(ComponentWhichReceivesEvent::class,'foo');
+    }
+
+    public function emitFooUp()
+    {
+        $this->emitUp('foo');
+    }
+
+    public function emitFooUpWithParam($param)
+    {
+        $this->emitUp('foo', $param);
     }
 
     public function render()
@@ -339,6 +446,22 @@ class ValidatesDataWithRealTimeStub extends Component
         $this->validateOnly($field, [
             'foo' => 'required|min:6',
             'bar' => 'required',
+        ]);
+    }
+
+    public function render()
+    {
+        return app('view')->make('null-view');
+    }
+}
+
+class ValidatesDataWithRulesHasParams extends Component{
+    public $foo, $bar;
+
+    public function submit()
+    {
+        $this->validate([
+            'foo' => 'string|min:2',
         ]);
     }
 
